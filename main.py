@@ -14,6 +14,12 @@ from models import (
     CommandPollResponse,
 )
 
+from services.location_sync_service import (
+    save_location_update,
+    get_latest_location_update,
+)
+
+
 app = FastAPI(
     title="OmniGuard API",
     description=(
@@ -23,12 +29,12 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# In-memory storage. Data disappears when the process restarts.
-locations: dict[str, LocationResponse] = {}
+
+# Temporary in-memory storage for commands.
+# Command persistence will be moved to MySQL separately.
 known_devices: set[str] = set()
 command_queues: dict[str, list[CommandResponse]] = defaultdict(list)
 
-# Protect shared in-memory state from concurrent requests.
 state_lock = Lock()
 
 
@@ -47,15 +53,28 @@ def health_check():
     status_code=status.HTTP_200_OK,
 )
 def update_location(payload: LocationUpdate):
-    """Receive and store a device's latest location and telemetry."""
+    """Save a device location and telemetry to MySQL."""
 
-    location = LocationResponse(**payload.model_dump())
+    try:
+        location_data = save_location_update(payload)
 
-    with state_lock:
-        known_devices.add(payload.device_id)
-        locations[payload.device_id] = location
+        # Keep legacy command functionality working in this process.
+        with state_lock:
+            known_devices.add(payload.device_id)
 
-    return location
+        return LocationResponse(**location_data)
+
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
 
 
 @app.get(
@@ -63,18 +82,27 @@ def update_location(payload: LocationUpdate):
     response_model=LocationResponse,
 )
 def get_location(device_id: str):
-    """Return the latest known location of a device."""
+    """Return the latest saved location from MySQL."""
 
-    with state_lock:
-        location = locations.get(device_id)
+    try:
+        location_data = get_latest_location_update(device_id)
 
-    if location is None:
+    except Exception as exc:
+        # Keep database details out of the API response.
+        print(f"Location database error: {exc}")
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to fetch location from the database.",
+        ) from exc
+
+    if location_data is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No location found for device '{device_id}'.",
         )
 
-    return location
+    return LocationResponse(**location_data)
 
 
 @app.post(
@@ -83,7 +111,7 @@ def get_location(device_id: str):
     status_code=status.HTTP_202_ACCEPTED,
 )
 def queue_command(payload: CommandRequest):
-    """Queue an authorized command for a registered device."""
+    """Queue a command for a device known to this server process."""
 
     with state_lock:
         if payload.device_id not in known_devices:
@@ -112,7 +140,7 @@ def queue_command(payload: CommandRequest):
     response_model=CommandPollResponse,
 )
 def poll_commands(device_id: str):
-    """Return pending commands and remove them from the queue."""
+    """Return pending commands and clear the in-memory queue."""
 
     with state_lock:
         if device_id not in known_devices:
@@ -121,8 +149,6 @@ def poll_commands(device_id: str):
                 detail=f"Unknown device '{device_id}'.",
             )
 
-        # Fetch and clear atomically to prevent duplicate delivery
-        # between concurrent polls in this process.
         pending = command_queues.pop(device_id, [])
 
     return CommandPollResponse(

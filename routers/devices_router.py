@@ -56,6 +56,7 @@ def register_new_device(
     payload: DeviceRegister,
     user_id: int = Depends(get_current_user),
 ):
+    print(f"Registering new device for user {user_id}: {payload.device_uuid} - {payload.device_name} this is call from router device")
     existing = get_device_by_uuid(payload.device_uuid)
 
     if existing:

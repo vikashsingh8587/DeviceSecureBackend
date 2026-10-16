@@ -13,6 +13,7 @@ def register_device(
 ):
     """Register a device for an existing user."""
     connection = get_connection()
+    print(f"Registering device for user {user_id}: {device_uuid} - {device_name}")
 
     try:
         with connection.cursor() as cursor:
@@ -89,6 +90,7 @@ def get_device_by_uuid(device_uuid):
 def get_user_devices(user_id):
     """Get all devices belonging to a user."""
     connection = get_connection()
+    print(f"Fetching devices for user {user_id}")
 
     try:
         with connection.cursor() as cursor:
@@ -111,7 +113,19 @@ def get_user_devices(user_id):
             """
 
             cursor.execute(query, (user_id,))
-            return cursor.fetchall()
+            rows = cursor.fetchall()
+
+            # Convert tuple rows into dictionaries
+            columns = [column[0] for column in cursor.description]
+
+            devices = [
+                dict(zip(columns, row))
+                for row in rows
+            ]
+
+            return devices
+    except Exception as e:
+        print(f"Error fetching devices for user {user_id}: {e}")
 
     finally:
         connection.close()

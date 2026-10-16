@@ -135,6 +135,7 @@ def get_location_history(device_id, limit=50, offset=0):
         connection.close()
 
 
+
 def count_device_locations(device_id):
     """Count stored location records for a device."""
     connection = get_connection()
@@ -150,7 +151,13 @@ def count_device_locations(device_id):
             cursor.execute(query, (device_id,))
             result = cursor.fetchone()
 
-            return result["total_locations"]
+            if result is None:
+                return 0
+
+            if isinstance(result, dict):
+                return result["total_locations"]
+
+            return result[0]
 
     finally:
         connection.close()
